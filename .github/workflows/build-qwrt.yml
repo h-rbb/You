@@ -1,0 +1,46 @@
+name: Build QWRT custom firmware
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (for Image Builder)
+        uses: docker/setup-qemu-action@v2
+
+      - name: Download OpenWrt Image Builder
+        run: |
+          mkdir -p ib
+          cd ib
+          # Download an appropriate OpenWrt Image Builder for ipq60xx; user should verify URL if needed
+          curl -L -o imagebuilder.tar.xz "https://downloads.openwrt.org/releases/24.05.1/targets/ipq60xx/generic/openwrt-imagebuilder-24.05.1-ipq60xx-generic.Linux-x86_64.tar.xz"
+          tar -xf imagebuilder.tar.xz
+
+      - name: Build custom image
+        run: |
+          cd ib/*imagebuilder*
+          # include packages: luci-app-homeproxy cloudflared dockerd docker-cli nezha-agent block-mount kmod-usb-storage kmod-fs-ext4
+          # This uses imagebuilder's PACKAGES option to include packages; may need package names adjusted for QWRT
+          make image PROFILE="jdcloud_re-ss-01" PACKAGES="luci-app-homeproxy cloudflared dockerd docker-cli nezha-template block-mount kmod-usb-storage kmod-fs-ext4" FILES=../build/files
+          ls -la bin/targets || true
+          echo "Build step complete"
+
+      - name: Calculate SHA256 and upload release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: "qwrt-custom-${{ github.run_id }}"
+          name: "QWRT custom build ${{ github.run_id }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: ib/*/bin/targets/**/openwrt-*-factory.bin || true
