@@ -2,11 +2,8 @@ name: Build QWRT
 
 on:
   push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -14,23 +11,43 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libncurses5-dev gawk git ccache ecj fastjar openjdk-11-jdk libssl-dev subversion python3 unzip
 
       - name: Clone luci-theme-argon
         run: git clone --depth 1 https://github.com/jerrykuku/luci-theme-argon /tmp/luci-theme-argon
 
       - name: Copy theme into overlay
-        run: |  
-          mkdir -p overlay/www/luci-static/argon
-          cp -a /tmp/luci-theme-argon/* overlay/www/luci-static/argon/
-          mkdir -p overlay/etc/uci-defaults
-          cat > overlay/etc/uci-defaults/100-set-theme <<'EOF'
-          #!/bin/sh
-          uci set luci.main.mediaurlbase=/luci-static/argon
-          uci commit luci
-          exit 0
-          EOF
-          chmod +x overlay/etc/uci-defaults/100-set-theme
+        run: |
+          mkdir -p files/www/luci-static/argon
+          cp -a /tmp/luci-theme-argon/* files/www/luci-static/argon/
+          mkdir -p files/etc/uci-defaults
+          cat > files/etc/uci-defaults/100-set-theme <<'EOF'
+#!/bin/sh
+uci set luci.main.mediaurlbase=/luci-static/argon
+uci commit luci
+exit 0
+EOF
+          chmod +x files/etc/uci-defaults/100-set-theme
+
+      - name: Update feeds
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
       - name: Build image
-        run: ./build-script.sh
+        run: |
+          make defconfig || true
+          make -j$(nproc) V=s 2>&1 | tee build.log
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: factory-bin
+          path: |
+            bin/**/*
+            build.log
