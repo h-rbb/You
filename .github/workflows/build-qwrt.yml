@@ -1,99 +1,36 @@
-name: Build QWRT Image
+name: Build QWRT
 
 on:
   push:
-    paths:
-      - '.github/workflows/build-qwrt.yml'
-  workflow_dispatch: {}
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
 
 jobs:
   build:
-    name: Build image
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v2
 
-      - name: Install required packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xz-utils wget tar ca-certificates build-essential
+      - name: Clone luci-theme-argon
+        run: git clone --depth 1 https://github.com/jerrykuku/luci-theme-argon /tmp/luci-theme-argon
 
-      - name: Download ImageBuilder
-        env:
-          IMAGEBUILDER_URL: https://downloads.openwrt.org/releases/23.05.3/targets/ipq60xx/generic/openwrt-imagebuilder-23.05.3-ipq60xx-generic.Linux-x86_64.tar.xz
-        run: |
-          echo "Downloading $IMAGEBUILDER_URL"
-          wget -q "$IMAGEBUILDER_URL" -O imagebuilder.tar.xz
-          tar -xf imagebuilder.tar.xz
-          ls -la
-
-      - name: Prepare files directory (empty placeholder)
-        run: |
-          mkdir -p files/etc/servercat
-          cat > files/etc/servercat/agent.conf <<'AGENT'
-# Placeholder: SERVER and KEY must be filled locally after flashing
-SERVER=
-KEY=
-AGENT
+      - name: Copy theme into overlay
+        run: |  
+          mkdir -p overlay/www/luci-static/argon
+          cp -a /tmp/luci-theme-argon/* overlay/www/luci-static/argon/
+          mkdir -p overlay/etc/uci-defaults
+          cat > overlay/etc/uci-defaults/100-set-theme <<'EOF'
+          #!/bin/sh
+          uci set luci.main.mediaurlbase=/luci-static/argon
+          uci commit luci
+          exit 0
+          EOF
+          chmod +x overlay/etc/uci-defaults/100-set-theme
 
       - name: Build image
-        id: build_image
-        run: |
-          set -e
-          IMG_DIR=$(ls -d openwrt-imagebuilder-*ipq60xx*-Linux-x86_64 || true)
-          if [ -z "$IMG_DIR" ]; then
-            echo "ImageBuilder directory not found"
-            ls -la
-            exit 1
-          fi
-          cd "$IMG_DIR"
-          PACKAGES="luci-app-homeproxy cloudflared dockerd docker-cli nezha-template block-mount kmod-usb-storage kmod-fs-ext4"
-          echo "Building with packages: $PACKAGES"
-          make image PROFILE=jdcloud_re-ss-01 PACKAGES="$PACKAGES" FILES=../files 2>&1 | tee build.log
-          # locate factory bin
-          FACTORY=$(find . -type f -name "*factory.bin" -print -quit || true)
-          if [ -z "$FACTORY" ]; then
-            echo "No factory.bin found in imagebuilder output:" 
-            find . -maxdepth 4 -type f -print
-            cp build.log ../build.log || true
-            exit 1
-          fi
-          # export path for later steps
-          echo "FACTORY_PATH=$(pwd)/$FACTORY" >> $GITHUB_ENV
-          echo "FACTORY_NAME=$(basename $FACTORY)" >> $GITHUB_ENV
-          sha256sum "$(pwd)/$FACTORY" > ../factory.sha256
-          cp "$(pwd)/$FACTORY" ../
-
-      - name: Create GitHub Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: auto-factory-${{ github.run_id }}
-          release_name: factory-${{ github.run_id }}
-          body: Auto-built factory image for jdcloud_re-ss-01 (AX1800 Pro, ipq60xx)
-
-      - name: Upload factory to Release (if found)
-        if: env.FACTORY_PATH != ''
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ${{ env.FACTORY_PATH }}
-          asset_name: ${{ env.FACTORY_NAME }}
-          asset_content_type: application/octet-stream
-
-      - name: Upload artifacts (always)
-        uses: actions/upload-artifact@v4
-        with:
-          name: factory-artifacts-${{ github.run_id }}
-          path: |
-            ./factory.sha256
-            ${{ env.FACTORY_PATH }}
-
-      - name: Show summary
-        run: |
-          echo "Build run completed. If factory was produced, it was uploaded to the Release and artifacts."
+        run: ./build-script.sh
